@@ -42,10 +42,6 @@ void Bee::tick() {
 
     uint8_t c = _read();
     
-#ifdef __DEBUG_BEE__
-    Serial1.print(c,HEX);
-    Serial1.print(" ");
-#endif
     if(c == 0x7E) {
         _currentPacket.offset = 0;
         _currentPacket.size = 0;
