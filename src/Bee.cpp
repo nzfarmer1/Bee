@@ -19,8 +19,6 @@
 
 #include "Bee.h"
 #include <assert.h>
-//extern SoftwareSerial debug;
-#define debug Serial1
 
 Bee::Bee(HardwareSerial *serial) {
     _serial = serial;
@@ -82,9 +80,6 @@ void Bee::tick() {
     
     if(_currentPacket.offset == _currentPacket.size) {
         _currentPacket.checksum = 0xFF - (_currentPacket.checksum & 0xFF);
-#ifdef __DEBUG_BEE__
-        debug.println(_currentPacket.checksum == (uint8_t)c ? "PASSED" : "FAILED");
-#endif
         if(_currentPacket.checksum == (uint8_t)c) {
             // Process contents of frame
             _processFrame();
@@ -97,16 +92,6 @@ void Bee::tick() {
 
 void Bee::_processFrame() {
     _pointerFrame.frameType = &_currentPacket.data[3];
-#ifdef __DEBUG_BEE__
-/*    debug.print("Processing frame type: ");
-    debug.println(*_pointerFrame.frameType,HEX);
-    uint8_t i=0;
-    for(i=0;i<_currentPacket.size;i++){
-        debug.print(_currentPacket.data[i],HEX);
-        debug.print(" ");
-    }
-    debug.println();
-*/#endif
     switch(*_pointerFrame.frameType) {
         case ATCommandResp:
             _pointerFrame.data = &_currentPacket.data[5];
@@ -223,9 +208,6 @@ void Bee::sendData(uint8_t *data, uint16_t size) {
     init[16] = 0x01; // TX Option bit 
 
 
-#ifdef __DEBUG_BEE__
-    debug.print("Send Data2: ");
-#endif
 
     // Write init bytes
     for(uint8_t i = 0; i < sizeof(init); i++) {
@@ -298,11 +280,6 @@ uint8_t Bee::_read() {
 
 void Bee::_write(uint8_t c) {
 
-#ifdef __DEBUG_BEE__
-        debug.print(c,HEX);
-        debug.print(' ');
-#endif
-
     if(_serial == NULL) {
         _serialSoft->write(c);
         return;
@@ -312,12 +289,6 @@ void Bee::_write(uint8_t c) {
 
 void Bee::_write(uint8_t *c, uint16_t size) {
     
-#ifdef __DEBUG_BEE__
-    for(int i=0;i<size;i++){
-     debug.print(c[i],HEX);
-     debug.print(' ');
-    }
-#endif
     if(_serial == NULL) {
         _serialSoft->write(c, size);
         return;
