@@ -18,36 +18,42 @@
  */
 
 #include "Bee.h"
+#include <assert.h>
+//extern SoftwareSerial debug;
+#define debug Serial1
 
-Bee::Bee(HardwareSerial *serial, uint32_t baud) {
+Bee::Bee(HardwareSerial *serial) {
     _serial = serial;
     _serialSoft = NULL;
-    _baud = baud;
     _currentPacket.offset = _currentPacket.size = _currentPacket.checksum = 0;
     _currentPacket.isEscaped = false;
 }
 
-Bee::Bee(SoftwareSerial *serial, uint32_t baud) {
+Bee::Bee(SoftwareSerial *serial) {
     _serial = NULL;
     _serialSoft = serial;
-    _baud = baud;
     _currentPacket.offset = _currentPacket.size = _currentPacket.checksum = 0;
     _currentPacket.isEscaped = false;
 }
+
 
 void Bee::tick() {
     if(!_available()) {
         return;
     }
 
-    char c = _read();
-
+    uint8_t c = _read();
+    
+#ifdef __DEBUG_BEE__
+    Serial1.print(c,HEX);
+    Serial1.print(" ");
+#endif
     if(c == 0x7E) {
         _currentPacket.offset = 0;
         _currentPacket.size = 0;
         _currentPacket.checksum = 0;
         _currentPacket.isEscaped = false;
-        memset(_currentPacket.data, 0, sizeof(_currentPacket.data));
+        memset((void *)_currentPacket.data, 0, sizeof(_currentPacket.data));
         return;
     }
     switch(++_currentPacket.offset) {
@@ -73,11 +79,12 @@ void Bee::tick() {
     }
 
     _currentPacket.data[_currentPacket.offset] = c;
-
+    
     if(_currentPacket.offset == _currentPacket.size) {
         _currentPacket.checksum = 0xFF - (_currentPacket.checksum & 0xFF);
-        //Serial.println(_currentPacket.checksum == (uint8_t)c ? "PASSED" : "FAILED");
-
+#ifdef __DEBUG_BEE__
+        debug.println(_currentPacket.checksum == (uint8_t)c ? "PASSED" : "FAILED");
+#endif
         if(_currentPacket.checksum == (uint8_t)c) {
             // Process contents of frame
             _processFrame();
@@ -90,7 +97,21 @@ void Bee::tick() {
 
 void Bee::_processFrame() {
     _pointerFrame.frameType = &_currentPacket.data[3];
+#ifdef __DEBUG_BEE__
+/*    debug.print("Processing frame type: ");
+    debug.println(*_pointerFrame.frameType,HEX);
+    uint8_t i=0;
+    for(i=0;i<_currentPacket.size;i++){
+        debug.print(_currentPacket.data[i],HEX);
+        debug.print(" ");
+    }
+    debug.println();
+*/#endif
     switch(*_pointerFrame.frameType) {
+        case ATCommandResp:
+            _pointerFrame.data = &_currentPacket.data[5];
+            _pointerFrame.dataLength = _currentPacket.size - 5;
+            break;
         case ExpRxIndicator:
             _pointerFrame.source64 = (uint64_t*)&_currentPacket.data[4];
             _pointerFrame.source16 = (uint16_t*)&_currentPacket.data[12];
@@ -101,11 +122,21 @@ void Bee::_processFrame() {
             _pointerFrame.data = &_currentPacket.data[21];
             _pointerFrame.dataLength = _currentPacket.size - 21;
             break;
+        case ZigBeeRecv:
+            _pointerFrame.source64 = (uint64_t*)&_currentPacket.data[4];
+            _pointerFrame.source16 = (uint16_t*)&_currentPacket.data[12];
+            // 16 and 64 bit source addrs are big endian, Arduino is little
+            *_pointerFrame.source16 = (*_pointerFrame.source16 >> 8) |
+              (*_pointerFrame.source16 << 8);
+            *_pointerFrame.source64 = __builtin_bswap64(*_pointerFrame.source64);
+            _pointerFrame.data = &_currentPacket.data[15];
+            _pointerFrame.dataLength = _currentPacket.size - 15;
+            break;
     }
     _callback(&_pointerFrame);
 }
 
-uint8_t Bee::_checksum(char *packet, uint16_t size) {
+uint8_t Bee::_checksum(uint8_t *packet, uint16_t size) {
     unsigned int sum = 0;
     for(uint16_t i = 3; i < size; i++) {
         sum += packet[i];
@@ -113,52 +144,88 @@ uint8_t Bee::_checksum(char *packet, uint16_t size) {
     return 0xFF - (sum & 0xFF);
 }
 
-void Bee::sendLocalAT(char command[2]) {
-    char at[8] = { 0x7E, 0x00, 0x04, 0x08, 0x01, command[0], command[1], 0x00 };
-    at[7] = _checksum(at, sizeof at);
-    _write(at, sizeof at);
+void Bee::sendLocalAT(atcmd command,const uint8_t * params, uint8_t paramLen) {
+
+    uint8_t at[8] = { 0x7E, 0x00, 0x04, 0x08, _frameId, command[0], command[1], 0x00 };
+    uint8_t atx[32];
+    assert(paramLen <= (sizeof atx - sizeof at));
+
+    memcpy(atx,at,sizeof at);
+
+    if ( paramLen > 0 ){
+        memcpy(atx + (sizeof at) -1,params,paramLen);
+        atx[2] = 4 + paramLen;
+        atx[(sizeof at) -1 + paramLen] = 0x00;
+        atx[(sizeof at) -1 + paramLen] = _checksum(atx, (sizeof at) + paramLen);
+    } else {
+        atx[(sizeof at) -1] = _checksum(atx, sizeof at);
+    }
+    _write(atx, (sizeof at) + paramLen);
+    _frameId = (_frameId+1)%255;
+}
+
+void Bee::sendLocalAT(atcmd command) {
+    sendLocalAT(command,NULL,0);
 }
 
 void Bee::sendData(String s) {
     int len = s.length();
-    char packet[len + 18];
+    uint8_t packet[len + 18];
     memset(packet, 0x00, sizeof packet);
     packet[0] = 0x7E;
     packet[1] = 0x00;
     packet[2] = 0x00;
     packet[3] = 0x10;
     packet[4] = 0x01;
-    packet[5] = 0x00;
-    packet[6] = 0x00;
-    packet[7] = 0x00;
-    packet[8] = 0x00;
-    packet[9] = 0x00;
-    packet[10] = 0x00;
-    packet[11] = 0xFF;
-    packet[12] = 0xFF;
+    packet[5] = (uint8_t)(addr64 >> 56);
+    packet[6] = (uint8_t)(addr64 >> 48);
+    packet[7] = (uint8_t)(addr64 >> 40);
+    packet[8] = (uint8_t)(addr64 >> 32);
+    packet[9] = (uint8_t)(addr64 >> 24);
+    packet[10] = (uint8_t)(addr64 >> 16);
+    packet[11] = (uint8_t)(addr64 >> 8);
+    packet[12] = (uint8_t)(addr64);
     packet[13] = 0xFF;
     packet[14] = 0xFE;
     packet[15] = 0x00;
     packet[16] = 0x00;
-    char *p = packet;
-    p += sizeof(char) * 17;
-    s.toCharArray(p, len + 1);
+    uint8_t *p = packet;
+    p += sizeof(uint8_t) * 17;
+    s.toCharArray((char *)p, len + 1);
     uint16_t packetLength = 14 + len;
     packet[1] = packetLength >> 8;
     packet[2] = packetLength & 0xFF;
     packet[len + 17] = _checksum(packet, sizeof packet);
-    for(int i = 0; i < sizeof packet; i++) {
-        //Serial.println(packet[i], HEX);
-    }
     _write(packet, sizeof packet);
 }
 
-void Bee::sendData(char *data, uint16_t size) {
-    char init[] = { 0x7E, 0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x00 };
-
+void Bee::sendData(uint8_t *data, uint16_t size) {
+    uint8_t init[17];
     uint16_t packetLength = sizeof(init) + size - 3;
     uint16_t checksum = 0;
+
+    init[0] = 0x7E;
+    init[1] = 0x00;
+    init[2] = 0x00;
+    init[3] = 0x10;
+    init[4] = 0x00; // Disable Acks on the FrameId
+    init[5] = (uint8_t)(addr64 >> 56);
+    init[6] = (uint8_t)(addr64 >> 48);
+    init[7] = (uint8_t)(addr64 >> 40);
+    init[8] = (uint8_t)(addr64 >> 32);
+    init[9] = (uint8_t)(addr64 >> 24);
+    init[10] = (uint8_t)(addr64 >> 16);
+    init[11] = (uint8_t)(addr64 >> 8);
+    init[12] = (uint8_t)(addr64);
+    init[13] = 0xFF;
+    init[14] = 0xFE;
+    init[15] = 0x01; // Set TX Radius
+    init[16] = 0x01; // TX Option bit 
+
+
+#ifdef __DEBUG_BEE__
+    debug.print("Send Data2: ");
+#endif
 
     // Write init bytes
     for(uint8_t i = 0; i < sizeof(init); i++) {
@@ -174,12 +241,15 @@ void Bee::sendData(char *data, uint16_t size) {
                 ibyte ^= 0x20;
             }
         }
+
         _write(ibyte);
         if(i > 2) {
             checksum += init[i];
         }
     }
 
+
+    
     // Write data bytes
     for(uint16_t i = 0; i < size; i++) {
         uint8_t ibyte = data[i];
@@ -193,9 +263,11 @@ void Bee::sendData(char *data, uint16_t size) {
 
     // Write checksum byte
     _write(0xFF - (checksum & 0xFF));
+
+
 }
 
-bool Bee::_escapeRequired(char c) {
+bool Bee::_escapeRequired(uint8_t c) {
     switch(c) {
         case 0x11:
         case 0x13:
@@ -217,14 +289,20 @@ uint16_t Bee::_available() {
     return _serial->available();
 }
 
-char Bee::_read() {
+uint8_t Bee::_read() {
     if(_serial == NULL) {
         return _serialSoft->read();
     }
     return _serial->read();
 }
 
-void Bee::_write(char c) {
+void Bee::_write(uint8_t c) {
+
+#ifdef __DEBUG_BEE__
+        debug.print(c,HEX);
+        debug.print(' ');
+#endif
+
     if(_serial == NULL) {
         _serialSoft->write(c);
         return;
@@ -232,7 +310,14 @@ void Bee::_write(char c) {
     _serial->write(c);
 }
 
-void Bee::_write(char *c, uint16_t size) {
+void Bee::_write(uint8_t *c, uint16_t size) {
+    
+#ifdef __DEBUG_BEE__
+    for(int i=0;i<size;i++){
+     debug.print(c[i],HEX);
+     debug.print(' ');
+    }
+#endif
     if(_serial == NULL) {
         _serialSoft->write(c, size);
         return;
@@ -240,8 +325,9 @@ void Bee::_write(char *c, uint16_t size) {
     _serial->write(c, size);
 }
 
-void Bee::begin() {
-    if(_serial == NULL) {
+void Bee::begin(long baud) {
+   _baud = baud;
+   if(_serial == NULL) {
         _serialSoft->begin(_baud);
         return;
     }

@@ -69,6 +69,11 @@ destination address of a Transmit Request
 * Optimize `tick` by removing unnecessary operations. Do we really need to zero
 the entire data array?
 
+## Modified Andrew McClure (AgSense) 2016
+* Added support for AT Command parameters
+* Added suppot for addressing
+* Packets optimised for single hop node to node performance
+
 ## Licensing
 Copyright &copy; 2014 Kevin Mark
 

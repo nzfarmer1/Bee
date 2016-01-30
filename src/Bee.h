@@ -22,37 +22,48 @@
 
 #include "Arduino.h"
 #include "SoftwareSerial.h"
+#define DEFAULTADDR64 0x000000000000FF
+
+
+
 
 struct BeePointerFrame {
-    char *frameType;
+    uint8_t *frameType;
     uint16_t packetLength;
     uint64_t *source64;
     uint16_t *source16;
     uint16_t dataLength;
-    char *data;
+    uint8_t *data;
 };
 
 struct BeeCurrentPacket {
     uint16_t offset;
     uint16_t size;
     uint16_t checksum;
-    char data[255];
+    uint8_t data[255];
     bool isEscaped;
 };
 
 typedef void (*BeeCallback)(BeePointerFrame *);
+typedef uint8_t atcmd[2];
 
 class Bee {
 public:
-    Bee(HardwareSerial *serial, uint32_t baud);
-    Bee(SoftwareSerial *serial, uint32_t baud);
+
+    Bee(HardwareSerial *serial);
+    Bee(SoftwareSerial *serial);
     void tick();
-    void sendLocalAT(char command[2]);
+    void setDestAddr64(uint64_t addr64){ this->addr64 = addr64; };
+    uint64_t getDestAddr64() { return this->addr64; };
+    void sendLocalAT(atcmd command);
+    void sendLocalAT(atcmd command,const uint8_t * params, uint8_t paramLen);
     void sendData(String data);
-    void sendData(char *data, uint16_t size);
+    void sendData(uint8_t *data, uint16_t size);
     void setCallback(BeeCallback);
-    void begin();
+    void begin(long baud);
     void end();
+
+    
 private:
     // Prevent heap allocation
     void * operator new   (size_t);
@@ -60,13 +71,15 @@ private:
     void   operator delete   (void *);
     void   operator delete[] (void *);
 
-    uint8_t _checksum(char *packet, uint16_t size);
+    uint8_t _frameId = 1;    
+    uint64_t addr64 = DEFAULTADDR64;
+    uint8_t _checksum(uint8_t *packet, uint16_t size);
     void _processFrame();
-    bool _escapeRequired(char c);
+    bool _escapeRequired(uint8_t c);
     uint16_t _available();
-    char _read();
-    void _write(char c);
-    void _write(char *c, uint16_t size);
+    uint8_t _read();
+    void _write(uint8_t c);
+    void _write(uint8_t *c, uint16_t size);
     HardwareSerial *_serial;
     SoftwareSerial *_serialSoft;
     uint32_t _baud;
